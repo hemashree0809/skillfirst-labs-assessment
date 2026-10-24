@@ -1,0 +1,7 @@
+# SkillFirst Labs - Tool-Using AI Agent Dependencies
+# Official Google GenAI SDK
+google-genai>=0.1.1
+
+# Environment variable management
+python-dotenv>=1.0.0
+
