@@ -1,113 +1,87 @@
 {
   "company": {
-    "name": "SkillFirst Labs",
-    "founded": 2023,
-    "headquarters": "San Francisco, California, USA",
-    "mission": "Empowering engineers through hands-on, assessment-driven AI and software engineering challenges.",
-    "founders": [
-      {
-        "name": "Dr. Elena Rostova",
-        "role": "Chief Executive Officer & Co-Founder",
-        "background": "Former AI Research Director with a PhD in Computer Science from Stanford University."
-      },
-      {
-        "name": "Marcus Vance",
-        "role": "Chief Technology Officer & Co-Founder",
-        "background": "Former Principal Distributed Systems Architect and open-source compiler contributor."
-      }
+    "name": "Skill First Applied Labs",
+    "official_website": "https://www.skillfirstlabs.com/",
+    "source": "https://www.skillfirstlabs.com/",
+    "source_label": "Official Website",
+    "verification_status": "verified_official_website",
+    "mission": "Bridge the academia-industry gap through a talent management platform for academic institutions.",
+    "mission_source": {
+      "source": "https://www.skillfirstlabs.com/",
+      "source_label": "Official Website",
+      "verification_status": "verified_official_website"
+    },
+    "platform_capabilities": [
+      "Real-time student skill tracking",
+      "Multi-channel skill validation",
+      "AI-powered insights"
     ],
-    "work_model": "Hybrid (Remote-first with collaborative engineering hubs in San Francisco and London)",
-    "funding": "Series A ($12M led by NextGen Ventures)"
+    "platform_capabilities_source": {
+      "source": "https://www.skillfirstlabs.com/",
+      "source_label": "Official Website",
+      "verification_status": "verified_official_website"
+    },
+    "founder": {
+      "name": "Gurunathan Murugan",
+      "role": "Founder",
+      "source": "https://www.skillfirstlabs.com/",
+      "source_label": "Official Website",
+      "verification_status": "verified_official_website"
+    },
+    "contact": {
+      "address": "G 304, RMK Chola Gardens, Sundara Cholavaram, Thiruverkadu, Chennai 600 077",
+      "email": "hello@keystone-tms.in",
+      "source": "https://www.skillfirstlabs.com/",
+      "source_label": "Official Website",
+      "verification_status": "verified_official_website"
+    },
+    "linkedin_attributed_info": {
+      "headquarters": "Tiruvallur, Tamil Nadu",
+      "founded": 2024,
+      "source": "LinkedIn Company Profile",
+      "source_label": "LinkedIn (Separately Attributed)",
+      "verification_status": "verified_linkedin_attributed",
+      "note": "Attributed separately from LinkedIn; not published on the official website."
+    }
   },
-  "internship_program": {
-    "title": "SkillFirst Labs AI/ML Engineering Internship",
-    "cohort": "Fall / Winter 2026",
-    "duration_weeks": 12,
-    "stipend": "$4,500 per month with comprehensive learning stipend",
-    "mentorship": "1:1 dedicated mentorship with a Senior Machine Learning Engineer and weekly architectural reviews",
+  "internship_assessment": {
+    "title": "SkillFirst Labs AI/ML Engineering Internship Assessment",
+    "source": "Repository Assignment Files",
+    "source_label": "Repository Assignment Files",
+    "verification_status": "verified_repo_assignment",
     "milestones": [
       {
         "milestone": 1,
         "name": "CSS Insight Parser",
         "folder": "CSS-Insight-Parser",
         "status": "Completed (23 automated tests passing)",
-        "description": "Zero-dependency pure Python CSS parser and analytics engine that extracts selectors, declarations, at-rules, and structural metrics."
+        "description": "Zero-dependency pure Python CSS parser and analytics engine that extracts selectors, declarations, at-rules, and structural metrics.",
+        "source": "CSS-Insight-Parser/README.md",
+        "source_label": "Repository Assignment Files",
+        "verification_status": "verified_repo_assignment"
       },
       {
         "milestone": 2,
         "name": "Tool-Using AI Agent",
         "folder": "AI-Agent",
         "status": "Active Implementation",
-        "description": "Autonomous tool-augmented AI agent featuring safe AST arithmetic evaluation, verified knowledge-base search, loop guards, and hallucination prevention."
-      },
-      {
-        "milestone": 3,
-        "name": "Full-Stack RAG & Evaluation Pipeline",
-        "folder": "RAG-Pipeline",
-        "status": "Upcoming",
-        "description": "Vector indexing, automated hallucination scoring, and end-to-end evaluation harness."
+        "description": "Autonomous tool-augmented AI agent featuring safe AST arithmetic evaluation, verified knowledge-base search, loop guards, and entity-aware hallucination prevention.",
+        "source": "AI-Agent/README.md",
+        "source_label": "Repository Assignment Files",
+        "verification_status": "verified_repo_assignment"
       }
     ],
-    "evaluation_criteria": [
-      "Deterministic tool execution and hallucination prevention",
-      "Zero-vulnerability safe expression evaluation (no unrestricted eval)",
-      "Comprehensive unit test suite runnable without live API dependency",
-      "Beginner-friendly documentation and clear secret management"
-    ]
-  },
-  "products": [
-    {
-      "id": "css-insight-parser",
-      "name": "CSS Insight Parser",
-      "version": "1.0.0",
-      "category": "Developer Tooling",
-      "description": "A lightweight, zero-dependency CSS parser and stylesheet analytics engine implemented in pure Python."
-    },
-    {
-      "id": "skill-agent-core",
-      "name": "SkillFirst Agent Engine",
-      "version": "2.1.0",
-      "category": "Autonomous AI Framework",
-      "description": "Enterprise agent framework featuring safe AST calculations, verified knowledge retrieval, and infinite loop guardrails."
-    },
-    {
-      "id": "eval-bench",
-      "name": "SkillBench AI Evaluation Platform",
-      "version": "3.0.0",
-      "category": "Model Evaluation",
-      "description": "Automated evaluation platform benchmarking LLM function calling, instruction following, and factual grounding."
+    "confirmed_requirements": [
+      "Pure Python CSS parser handling declarations, comments, at-rules, and duplicate selector detection",
+      "Safe AST calculator supporting +, -, *, /, decimals, parentheses without eval()",
+      "Grounded knowledge-base search reading facts from local verified data with zero hallucination",
+      "Comprehensive automated test suite runnable without live API dependency",
+      "Secure API key management via .env without committing secrets"
+    ],
+    "confirmed_requirements_source": {
+      "source": "Root README.md & Milestone specifications",
+      "source_label": "Repository Assignment Files",
+      "verification_status": "verified_repo_assignment"
     }
-  ],
-  "security_and_policies": {
-    "api_key_policy": "Strict policy: API keys must never be committed to version control. Keys must be stored in .env or system environment variables.",
-    "hallucination_policy": "SkillFirst Labs strictly mandates that agents must never invent company facts or present unsupported information as verified. If a topic is not in verified records, the agent must report that the information is unavailable.",
-    "tool_determinism_policy": "All agent tools must be deterministic for identical inputs to ensure auditability and repeatability.",
-    "data_privacy": "GDPR and CCPA compliant. Customer prompts and code snippets are processed with zero data retention for training.",
-    "certifications": [
-      "SOC 2 Type II Certified",
-      "ISO/IEC 27001:2022",
-      "GDPR Compliant"
-    ]
-  },
-  "contact_and_support": {
-    "technical_support_email": "support@skillfirstlabs.com",
-    "internship_inquiries": "careers@skillfirstlabs.com",
-    "security_reporting": "security@skillfirstlabs.com",
-    "office_hours": "Monday through Friday, 09:00 - 18:00 PST"
-  },
-  "faq": [
-    {
-      "question": "What is the policy on hallucinated company facts?",
-      "answer": "SkillFirst Labs strictly mandates that agents must never invent company facts. If a topic is not in verified records, the agent must report that the information is unavailable."
-    },
-    {
-      "question": "How are tool outputs verified?",
-      "answer": "Tools must execute deterministically. The same query against the same state must produce the identical result every time."
-    },
-    {
-      "question": "Where should API keys be configured?",
-      "answer": "API keys must be placed in a local .env file (using .env.example as a template) or in system environment variables (GEMINI_API_KEY). Never commit them to Git."
-    }
-  ]
+  }
 }
-

@@ -29,33 +29,45 @@ def load_env(filepath: str = ".env") -> None:
     """
     Loads key-value pairs from a .env file into os.environ.
     Uses python-dotenv if installed, otherwise falls back to standard file parsing.
+    Checks both the specified path and the agent's directory to ensure secrets are found.
     """
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    candidate_paths = []
+    if os.path.isabs(filepath):
+        candidate_paths.append(filepath)
+    else:
+        candidate_paths.append(os.path.join(base_dir, filepath))
+        candidate_paths.append(os.path.abspath(filepath))
+        candidate_paths.append(os.path.join(os.path.dirname(base_dir), filepath))
+
+    resolved_path = None
+    for cp in candidate_paths:
+        if os.path.isfile(cp):
+            resolved_path = cp
+            break
+
+    if not resolved_path:
+        return
+
     try:
         from dotenv import load_dotenv  # type: ignore
-        load_dotenv(filepath)
-        return
+        load_dotenv(resolved_path)
+        if "GEMINI_API_KEY" in os.environ:
+            return
     except ImportError:
         pass
 
-    # Standard library fallback
-    if not os.path.isabs(filepath):
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        resolved_path = os.path.join(base_dir, filepath)
-    else:
-        resolved_path = filepath
-
-    if os.path.isfile(resolved_path):
-        with open(resolved_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if "=" in line:
-                    key, val = line.split("=", 1)
-                    key = key.strip()
-                    val = val.strip().strip("'\"")
-                    if key and key not in os.environ:
-                        os.environ[key] = val
+    with open(resolved_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, val = line.split("=", 1)
+                key = key.strip()
+                val = val.strip().strip("'\"")
+                if key and key not in os.environ:
+                    os.environ[key] = val
 
 
 # ============================================================================
@@ -162,116 +174,225 @@ def safe_calculate(expression: str) -> Dict[str, Any]:
 # Tool 2: Grounded Knowledge-Base Search
 # ============================================================================
 
+KNOWN_HOST_ENTITIES = {
+    "skill first applied labs", "skill first", "skillfirst labs", "skillfirst",
+    "applied labs", "the company", "this company", "our company", "company", "organization"
+}
+
+KNOWN_SUB_ENTITIES = {
+    "gurunathan murugan", "gurunathan", "murugan",
+    "css insight parser", "insight parser", "css parser",
+    "tool-using ai agent", "ai agent",
+    "milestone 1", "milestone 2"
+}
+
+
+def extract_query_subject(query: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Extracts (subject_entity, attribute_target) from a query.
+    For example:
+    - 'Where is the Google headquarters?' -> ('Google', 'headquarters')
+    - 'Where is Google headquartered?' -> ('Google', 'headquartered')
+    - 'Where is SkillFirst Labs headquartered?' -> ('SkillFirst Labs', 'headquartered')
+    - 'Who is the founder of Skill First Applied Labs?' -> ('Skill First Applied Labs', 'founder')
+    - 'Who founded Google?' -> ('Google', 'founder')
+    """
+    q_clean = query.strip().rstrip("?").strip()
+
+    # 1. Possessive: e.g. "Google's headquarters", "SkillFirst's founder"
+    m = re.search(r"\b([A-Za-z0-9\.\-\s]+?)'s\s+(headquarters|headquarter|hq|office|location|founders?|ceo|cto|stipend|stock\s+price|stock|mission|funding|address|email)\b", q_clean, re.I)
+    if m:
+        return m.group(1).strip(), m.group(2).lower()
+
+    # 2. Attribute of Entity: e.g. "headquarters of Google", "founder of Skill First Applied Labs"
+    m = re.search(r"\b(headquarters|headquarter|hq|location|founders?|founder|ceo|cto|stock\s+price|stipend|mission|funding|address|email|phone)\s+of\s+(?:the\s+)?([A-Za-z0-9\.\-\s]+)", q_clean, re.I)
+    if m:
+        return m.group(2).strip(), m.group(1).lower()
+
+    # 3. Who founded Entity
+    m = re.search(r"\bwho\s+(?:founded|started|created|leads|run|runs)\s+(?:the\s+)?([A-Za-z0-9\.\-\s]+)", q_clean, re.I)
+    if m:
+        return m.group(1).strip(), "founder"
+
+    # 4. Where/who/what is (the) Entity headquarters/headquartered/located/founder...
+    m = re.search(r"\b(?:where|who|what)\s+(?:is|are|was|were)\s+(?:the\s+)?([A-Za-z0-9\.\-\s]+?)\s+(headquarters|headquartered|hq|office|located|location|founded|founders?|founder|ceo|cto|stipend|stock\s+price|stock|mission|funding|address|email)\b", q_clean, re.I)
+    if m:
+        ent = m.group(1).strip()
+        if ent.lower() not in ("the", "a", "an", "of", "for", "in", "at", "to"):
+            return ent, m.group(2).lower()
+
+    return None, None
+
+
 def _build_facts_index(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
-    Constructs discrete, semantically grouped fact records from knowledge.json.
-    Ensures that entities (e.g. founders, milestones, products) are preserved
-    as complete, coherent facts rather than fragmented single-key pieces.
+    Constructs discrete, verified, source-attributed fact records from knowledge.json.
+    Every record includes source URL, source label, and verification status.
     """
     facts = []
 
-    # 1. Company Overview & Details
-    if "company" in data:
-        comp = data["company"]
-        overview_text = (
-            f"SkillFirst Labs was founded in {comp.get('founded')}. "
-            f"Headquarters: {comp.get('headquarters')}. "
-            f"Mission: {comp.get('mission')} "
-            f"Work model: {comp.get('work_model')}. "
-            f"Funding: {comp.get('funding')}."
-        )
+    company_base_keywords = [
+        "skill", "first", "applied", "labs", "skillfirst", "skill first",
+        "applied labs", "skill first applied labs", "skillfirst labs", "company", "organization"
+    ]
+
+    comp = data.get("company", {})
+    if comp:
+        # 1. Organization Identity & Official Website
+        org_name = comp.get("name", "Skill First Applied Labs")
+        website = comp.get("official_website", "https://www.skillfirstlabs.com/")
         facts.append({
-            "topic": "company.overview",
-            "keywords": ["company", "overview", "founded", "founding", "headquarters", "mission", "location", "funding", "work", "model"],
-            "fact": overview_text
+            "topic": "company.identity",
+            "entity": "Skill First Applied Labs",
+            "attribute": "identity",
+            "source": comp.get("source", website),
+            "source_label": comp.get("source_label", "Official Website"),
+            "verification_status": comp.get("verification_status", "verified_official_website"),
+            "keywords": list(set(company_base_keywords + [
+                "name", "identity", "official website", "website", "domain", "url"
+            ])),
+            "fact": f"Organization Name: {org_name}. Official Website: {website}."
         })
 
-        # Founders
-        for f in comp.get("founders", []):
-            f_text = f"Co-Founder: {f.get('name')} ({f.get('role')}). Background: {f.get('background')}"
+        # 2. Mission
+        mission_text = comp.get("mission")
+        if mission_text:
+            m_src = comp.get("mission_source", {})
             facts.append({
-                "topic": "company.founders",
-                "keywords": ["founder", "founders", "co-founder", "leadership", "executive", f.get("name", "").lower()],
-                "fact": f_text
+                "topic": "company.mission",
+                "entity": "Skill First Applied Labs",
+                "attribute": "mission",
+                "source": m_src.get("source", website),
+                "source_label": m_src.get("source_label", "Official Website"),
+                "verification_status": m_src.get("verification_status", "verified_official_website"),
+                "keywords": list(set(company_base_keywords + [
+                    "mission", "purpose", "goal", "vision", "academia", "industry",
+                    "academia-industry gap", "talent management", "platform", "academic institutions"
+                ])),
+                "fact": f"Mission of Skill First Applied Labs: {mission_text}"
             })
 
-    # 2. Internship Program
-    if "internship_program" in data:
-        prog = data["internship_program"]
-        prog_text = (
-            f"Program: {prog.get('title')} ({prog.get('cohort')}). "
-            f"Duration: {prog.get('duration_weeks')} weeks. "
-            f"Stipend: {prog.get('stipend')}. "
-            f"Mentorship: {prog.get('mentorship')}."
-        )
-        facts.append({
-            "topic": "internship_program.overview",
-            "keywords": ["internship", "program", "cohort", "duration", "weeks", "stipend", "pay", "salary", "compensation", "mentorship"],
-            "fact": prog_text
-        })
-
-        # Milestones
-        for m in prog.get("milestones", []):
-            m_text = (
-                f"Milestone {m.get('milestone')}: {m.get('name')} (Folder: {m.get('folder')}). "
-                f"Status: {m.get('status')}. Description: {m.get('description')}"
-            )
+        # 3. Platform Capabilities
+        capabilities = comp.get("platform_capabilities", [])
+        if capabilities:
+            cap_str = ", ".join(capabilities)
+            c_src = comp.get("platform_capabilities_source", {})
             facts.append({
-                "topic": f"internship_program.milestone_{m.get('milestone')}",
-                "keywords": ["milestone", "milestones", str(m.get("milestone")), m.get("name", "").lower(), m.get("folder", "").lower()],
-                "fact": m_text
+                "topic": "company.platform_capabilities",
+                "entity": "Skill First Applied Labs",
+                "attribute": "platform_capabilities",
+                "source": c_src.get("source", website),
+                "source_label": c_src.get("source_label", "Official Website"),
+                "verification_status": c_src.get("verification_status", "verified_official_website"),
+                "keywords": list(set(company_base_keywords + [
+                    "platform", "capabilities", "features", "skills", "tracking", "validation",
+                    "insights", "ai-powered", "student", "student skill tracking", "multi-channel"
+                ])),
+                "fact": f"Platform Capabilities of Skill First Applied Labs (Official Website): {cap_str}."
             })
 
-        # Evaluation Criteria
-        for crit in prog.get("evaluation_criteria", []):
+        # 4. Founder
+        founder_info = comp.get("founder", {})
+        if founder_info:
+            f_name = founder_info.get("name", "Gurunathan Murugan")
+            f_role = founder_info.get("role", "Founder")
             facts.append({
-                "topic": "internship_program.evaluation_criteria",
-                "keywords": ["evaluation", "criteria", "rubric", "grading", "assessment", "rules"],
-                "fact": f"Evaluation Criterion: {crit}"
+                "topic": "company.founder",
+                "entity": "Skill First Applied Labs",
+                "attribute": "founder",
+                "source": founder_info.get("source", website),
+                "source_label": founder_info.get("source_label", "Official Website"),
+                "verification_status": founder_info.get("verification_status", "verified_official_website"),
+                "keywords": list(set(company_base_keywords + [
+                    "founder", "founders", "founded", "gurunathan", "murugan", "gurunathan murugan",
+                    "leadership", "executive", "who founded", "creator"
+                ])),
+                "fact": f"Founder of Skill First Applied Labs: {f_name} ({f_role}, Skill First Applied Labs)."
             })
 
-    # 3. Products
-    for p in data.get("products", []):
-        p_text = f"Product: {p.get('name')} (v{p.get('version')}, {p.get('category')}). Description: {p.get('description')}"
-        facts.append({
-            "topic": f"products.{p.get('id', '')}",
-            "keywords": ["product", "products", p.get("id", "").lower(), p.get("name", "").lower(), p.get("category", "").lower()],
-            "fact": p_text
-        })
-
-    # 4. Security & Policies
-    if "security_and_policies" in data:
-        sec = data["security_and_policies"]
-        for k, v in sec.items():
-            if isinstance(v, list):
-                v_str = ", ".join(str(item) for item in v)
-            else:
-                v_str = str(v)
+        # 5. Contact Details (Published on Official Website)
+        contact_info = comp.get("contact", {})
+        if contact_info:
+            addr = contact_info.get("address", "")
+            email = contact_info.get("email", "")
             facts.append({
-                "topic": f"security_and_policies.{k}",
-                "keywords": ["security", "policy", "policies", k.replace("_", " "), k.lower()],
-                "fact": f"{k.replace('_', ' ').capitalize()}: {v_str}"
+                "topic": "company.contact",
+                "entity": "Skill First Applied Labs",
+                "attribute": "contact",
+                "source": contact_info.get("source", website),
+                "source_label": contact_info.get("source_label", "Official Website"),
+                "verification_status": contact_info.get("verification_status", "verified_official_website"),
+                "keywords": list(set(company_base_keywords + [
+                    "contact", "address", "email", "office", "location", "chennai", "thiruverkadu",
+                    "sundara cholavaram", "rmk chola gardens", "600 077", "hello@keystone-tms.in",
+                    "where is", "located", "headquarters", "headquartered"
+                ])),
+                "fact": f"Contact Address for Skill First Applied Labs (Official Website): {addr}. Contact Email: {email}."
             })
 
-    # 5. Contact & Support
-    if "contact_and_support" in data:
-        cs = data["contact_and_support"]
-        for k, v in cs.items():
+        # 6. LinkedIn-Attributed Info (Headquarters & Founded Year)
+        linkedin_info = comp.get("linkedin_attributed_info", {})
+        if linkedin_info:
+            hq = linkedin_info.get("headquarters", "")
+            founded_yr = linkedin_info.get("founded", "")
+            note = linkedin_info.get("note", "")
             facts.append({
-                "topic": f"contact_and_support.{k}",
-                "keywords": ["contact", "support", "email", "office", "hours", k.replace("_", " ")],
-                "fact": f"{k.replace('_', ' ').capitalize()}: {v}"
+                "topic": "company.linkedin_attributed_info",
+                "entity": "Skill First Applied Labs",
+                "attribute": "headquarters",
+                "source": linkedin_info.get("source", "LinkedIn Company Profile"),
+                "source_label": linkedin_info.get("source_label", "LinkedIn (Separately Attributed)"),
+                "verification_status": linkedin_info.get("verification_status", "verified_linkedin_attributed"),
+                "keywords": list(set(company_base_keywords + [
+                    "headquarters", "headquartered", "hq", "location", "tiruvallur", "tamil nadu",
+                    "founded", "year", "2024", "linkedin", "where is", "located"
+                ])),
+                "fact": f"Headquarters for Skill First Applied Labs (Separately Attributed via LinkedIn): {hq} (Founded: {founded_yr}). Note: {note}"
             })
 
-    # 6. FAQ
-    for idx, item in enumerate(data.get("faq", [])):
-        q = item.get("question", "")
-        a = item.get("answer", "")
-        facts.append({
-            "topic": f"faq[{idx}]",
-            "keywords": ["faq", "question", "help"] + q.lower().split(),
-            "fact": f"Q: {q} A: {a}"
-        })
+    # 7. Internship Assessment Milestones (Supported by Repository Assignment Files)
+    assessment = data.get("internship_assessment", {})
+    if assessment:
+        milestones = assessment.get("milestones", [])
+        for m in milestones:
+            m_num = str(m.get("milestone"))
+            m_name = m.get("name", "")
+            m_folder = m.get("folder", "")
+            m_status = m.get("status", "")
+            m_desc = m.get("description", "")
+            facts.append({
+                "topic": f"internship_assessment.milestone_{m_num}",
+                "entity": "Skill First Applied Labs",
+                "attribute": "milestones",
+                "source": m.get("source", "Repository Assignment Files"),
+                "source_label": m.get("source_label", "Repository Assignment Files"),
+                "verification_status": m.get("verification_status", "verified_repo_assignment"),
+                "keywords": [
+                    "milestone", "milestones", m_num, f"milestone {m_num}", f"milestone{m_num}",
+                    "assessment", "internship", "task", "project", m_name.lower(), m_folder.lower(),
+                    "parser", "agent"
+                ],
+                "fact": f"Assessment Milestone {m_num}: {m_name} (Folder: {m_folder}). Status: {m_status}. Description: {m_desc}"
+            })
+
+        # Confirmed Requirements
+        requirements = assessment.get("confirmed_requirements", [])
+        if requirements:
+            req_src = assessment.get("confirmed_requirements_source", {})
+            req_summary = "; ".join(requirements)
+            facts.append({
+                "topic": "internship_assessment.confirmed_requirements",
+                "entity": "Skill First Applied Labs",
+                "attribute": "requirements",
+                "source": req_src.get("source", "Repository Assignment Files"),
+                "source_label": req_src.get("source_label", "Repository Assignment Files"),
+                "verification_status": req_src.get("verification_status", "verified_repo_assignment"),
+                "keywords": [
+                    "requirements", "confirmed requirements", "criteria", "rubric", "evaluation",
+                    "assessment", "rules", "testing", "calculator", "parser", "agent"
+                ],
+                "fact": f"Confirmed Assessment Requirements (Repository Assignment Files): {req_summary}."
+            })
 
     return facts
 
@@ -306,8 +427,10 @@ class KnowledgeBase:
 
     def search(self, query: str) -> Dict[str, Any]:
         """
-        Searches the knowledge base for facts matching the query keywords.
-        Returns matching information if found, or a clear not-found notification.
+        Entity-aware, source-attributed search of the verified knowledge base.
+        Validates:
+        1. Subject entity match (foreign entities like Google return not_found immediately).
+        2. Attribute relevance (evidence must actually answer the question).
         Never invents or hallucinates facts.
         """
         if not isinstance(query, str) or not query.strip():
@@ -319,7 +442,35 @@ class KnowledgeBase:
         cleaned_query = query.strip()
         query_lower = cleaned_query.lower()
 
-        # Extract words from query
+        # Step 1: Entity & Subject Extraction
+        subject_entity, attribute_target = extract_query_subject(cleaned_query)
+
+        # If a subject entity was detected, verify if it is an external/unknown entity
+        if subject_entity:
+            ent_norm = subject_entity.lower().strip()
+            is_host_entity = any(h in ent_norm or ent_norm in h for h in KNOWN_HOST_ENTITIES)
+            is_sub_entity = any(s in ent_norm or ent_norm in s for s in KNOWN_SUB_ENTITIES)
+
+            if not is_host_entity and not is_sub_entity:
+                # Query explicitly asks about a foreign entity (e.g. Google, Microsoft, Apple)
+                return {
+                    "status": "not_found",
+                    "query": cleaned_query,
+                    "matches_count": 0,
+                    "results": [],
+                    "detected_entity": subject_entity,
+                    "entity_match": False,
+                    "message": (
+                        f"No verified facts found in the knowledge base for '{subject_entity}'. "
+                        "The requested information is not available in verified records."
+                    ),
+                    "reason": (
+                        f"Query specifically asks about '{subject_entity}', which is an external or unverified entity "
+                        "not present in the Skill First Applied Labs knowledge base."
+                    )
+                }
+
+        # Step 2: Tokenize and filter query
         raw_words = [re.sub(r"[^\w\-]", "", w) for w in query_lower.split()]
         raw_words = [w for w in raw_words if w]
 
@@ -327,16 +478,54 @@ class KnowledgeBase:
             "what", "who", "where", "when", "why", "how", "is", "are", "was",
             "were", "the", "a", "an", "of", "in", "for", "to", "at", "and",
             "or", "on", "with", "does", "do", "did", "tell", "me", "about",
-            "can", "you", "please", "give", "find", "show", "which", "there"
+            "can", "you", "please", "give", "find", "show", "which", "there",
+            "work", "works", "explain", "describe", "many", "much",
+            "current", "present", "latest", "official", "verified", "details", "information"
         }
-        domain_words = {"skillfirst", "labs", "company", "information", "details"}
+        domain_words = {"skill", "first", "applied", "labs", "company", "information", "details"}
+        attribute_stop_words = {
+            "headquarters", "headquarter", "headquartered", "hq", "location", "located",
+            "founder", "founders", "founded", "ceo", "cto", "address", "email", "phone"
+        }
 
-        # Substantive query terms excluding conversational stopwords and domain brand words
-        substantive_tokens = [w for w in raw_words if w not in stop_words and w not in domain_words and len(w) > 1]
+        # Check for unknown entity tokens not present in any fact or keyword
+        all_known_tokens = set()
+        for item in self._facts:
+            all_known_tokens.update(item["topic"].lower().replace(".", " ").split())
+            all_known_tokens.update(item["fact"].lower().split())
+            for kw in item.get("keywords", []):
+                all_known_tokens.update(str(kw).lower().split())
 
-        # If user only asked domain words (e.g. "SkillFirst Labs" or "company"), fall back to them
-        if not substantive_tokens:
-            substantive_tokens = [w for w in raw_words if w not in stop_words and len(w) > 1]
+        unknown_tokens = [
+            w for w in raw_words
+            if w not in stop_words and w not in domain_words and w not in attribute_stop_words
+            and not any(w in known for known in all_known_tokens)
+        ]
+
+        if unknown_tokens:
+            # Contains unrecorded entity or concept (e.g. "google", "netflix", "stock", "pet", "dental")
+            first_unknown = unknown_tokens[0]
+            return {
+                "status": "not_found",
+                "query": cleaned_query,
+                "matches_count": 0,
+                "results": [],
+                "detected_entity": first_unknown.capitalize(),
+                "entity_match": False,
+                "message": (
+                    f"No verified facts found in the knowledge base matching '{cleaned_query}'. "
+                    "The requested information is not available in verified records."
+                ),
+                "reason": (
+                    f"Query contains unverified term or entity '{first_unknown}', "
+                    "which does not exist in verified Skill First Applied Labs records."
+                )
+            }
+
+        substantive_tokens = [
+            w for w in raw_words
+            if w not in stop_words and (len(w) > 1 or w.isdigit())
+        ]
         if not substantive_tokens:
             substantive_tokens = [query_lower]
 
@@ -351,9 +540,9 @@ class KnowledgeBase:
             matched_substantive = 0
             score = 0.0
 
-            # Exact phrase match
+            # Exact phrase match in fact or topic
             if query_lower in fact_lower or query_lower in topic_lower:
-                score += 25.0
+                score += 30.0
                 matched_substantive = len(substantive_tokens)
 
             # Check individual substantive tokens with word boundary matching
@@ -361,7 +550,7 @@ class KnowledgeBase:
                 token_matched = False
 
                 for kw in keywords_lower:
-                    if token in kw or kw in token:
+                    if token == kw or (len(token) > 3 and token in kw):
                         score += 10.0
                         token_matched = True
                         break
@@ -377,10 +566,9 @@ class KnowledgeBase:
                 if token_matched:
                     matched_substantive += 1
 
-            # Require sufficient substantive token match coverage
             if matched_substantive > 0:
                 coverage = matched_substantive / len(substantive_tokens)
-                if len(substantive_tokens) > 2 and coverage < 0.4:
+                if len(substantive_tokens) > 2 and coverage < 0.35:
                     continue
                 scored_matches.append((score * coverage, item))
 
@@ -390,13 +578,16 @@ class KnowledgeBase:
             return {
                 "status": "not_found",
                 "query": cleaned_query,
+                "matches_count": 0,
+                "results": [],
                 "message": (
                     f"No verified facts found in the knowledge base matching '{cleaned_query}'. "
                     "The requested information is not available in verified records."
-                )
+                ),
+                "reason": f"No entries in knowledge.json matched substantive search terms: {substantive_tokens}."
             }
 
-        # Deduplicate and return top matches
+        # Deduplicate and return top matches with source attribution
         unique_results = []
         seen = set()
         for _, item in scored_matches[:6]:
@@ -404,14 +595,24 @@ class KnowledgeBase:
                 seen.add(item["fact"])
                 unique_results.append({
                     "topic": item["topic"],
-                    "fact": item["fact"]
+                    "fact": item["fact"],
+                    "source": item.get("source", ""),
+                    "source_label": item.get("source_label", "Verified Record"),
+                    "verification_status": item.get("verification_status", "verified")
                 })
+
+        evidence_lines = [
+            f"- [{item['topic']}] {item['fact']} (Source: {item.get('source_label')} - {item.get('source')})"
+            for item in unique_results
+        ]
+        evidence_summary = "\n".join(evidence_lines)
 
         return {
             "status": "success",
             "query": cleaned_query,
             "matches_count": len(unique_results),
-            "results": unique_results
+            "results": unique_results,
+            "evidence": evidence_summary
         }
 
 
@@ -453,13 +654,20 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "search_knowledge_base",
-        "description": "Searches verified company facts, products, internship details, security policies, and FAQs from the local knowledge base.",
+        "description": (
+            "Searches verified, source-attributed facts about Skill First Applied Labs (https://www.skillfirstlabs.com/), "
+            "including organization mission (bridging the academia-industry gap via talent management platform), "
+            "platform capabilities (real-time student skill tracking, multi-channel skill validation, AI-powered insights), "
+            "founder Gurunathan Murugan, official Chennai contact address, official contact email (hello@keystone-tms.in), "
+            "separately attributed LinkedIn details (Tiruvallur, Tamil Nadu headquarters, 2024 founding year), "
+            "and repository assessment milestones (Milestone 1 CSS Insight Parser, Milestone 2 Tool-Using AI Agent)."
+        ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "query": {
                     "type": "STRING",
-                    "description": "Keywords or questions to look up in the verified knowledge base."
+                    "description": "Keywords, entity, or question to look up in the verified knowledge base."
                 }
             },
             "required": ["query"]
@@ -476,22 +684,35 @@ TOOL_REGISTRY: Dict[str, Callable[..., Any]] = {
 def execute_tool(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     """
     Executes a tool by name with provided arguments.
+    Resilient against parameter naming variations (query, q, question, expression, expr).
     Safely captures all exceptions and returns structured output.
     """
-    if tool_name not in TOOL_REGISTRY:
-        return {
-            "status": "error",
-            "error": f"Unknown tool '{tool_name}'. Available tools: {list(TOOL_REGISTRY.keys())}"
-        }
-
-    func = TOOL_REGISTRY[tool_name]
     try:
-        return func(**args)
-    except TypeError as te:
-        return {
-            "status": "error",
-            "error": f"Invalid arguments for tool '{tool_name}': {str(te)}"
-        }
+        if tool_name == "calculate":
+            expr_keys = ("expression", "expr", "input", "formula")
+            matched_key = next((k for k in expr_keys if k in args), None)
+            if matched_key is None:
+                return {
+                    "status": "error",
+                    "error": "Invalid arguments for 'calculate'. Missing required 'expression' parameter."
+                }
+            expr = args.get(matched_key, "")
+            return safe_calculate(str(expr))
+        elif tool_name == "search_knowledge_base":
+            query_keys = ("query", "q", "question", "keywords", "search_query", "topic")
+            matched_key = next((k for k in query_keys if k in args), None)
+            if matched_key is None:
+                return {
+                    "status": "error",
+                    "error": "Invalid arguments for 'search_knowledge_base'. Missing required 'query' parameter."
+                }
+            query = args.get(matched_key, "")
+            return search_knowledge_base(str(query))
+        else:
+            return {
+                "status": "error",
+                "error": f"Unknown tool '{tool_name}'. Available tools: ['calculate', 'search_knowledge_base']"
+            }
     except Exception as exc:
         return {
             "status": "error",
@@ -503,15 +724,17 @@ def execute_tool(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
 # Gemini API Client (Direct REST client with standard library)
 # ============================================================================
 
-SYSTEM_INSTRUCTION = """You are the official SkillFirst Labs AI Agent.
+SYSTEM_INSTRUCTION = """You are the official AI Agent for Skill First Applied Labs (https://www.skillfirstlabs.com/).
 You have access to two tools:
 1. 'calculate': Use this tool for ANY AND ALL mathematical and arithmetic calculations (e.g. addition, subtraction, multiplication, division, percentages). Never compute calculations manually.
-2. 'search_knowledge_base': Use this tool for questions about SkillFirst Labs, company background, founders, products, technologies, internship programs, milestones, security policies, and FAQs.
+2. 'search_knowledge_base': Use this tool for ANY questions about Skill First Applied Labs, official website facts (mission, platform capabilities, founder Gurunathan Murugan, Chennai contact address, hello@keystone-tms.in), separately attributed LinkedIn details (Tiruvallur, Tamil Nadu headquarters, 2024 founding year), and confirmed repository assessment milestones (Milestone 1 CSS Insight Parser, Milestone 2 Tool-Using AI Agent). Always consult this tool to retrieve verified evidence before answering.
 
-HALLUCINATION PREVENTION RULES:
-- Never invent company facts, statistics, credentials, or policies.
-- If the knowledge base does not contain the requested information or returns 'not_found', you MUST explicitly report that the information cannot be verified from available records. Never pretend unverified assumptions are facts.
-- Present tool results accurately and faithfully.
+HALLUCINATION PREVENTION & ENTITY INTEGRITY RULES:
+- Never invent company facts, stock prices, credentials, unsupported policies, or assessment milestones.
+- CRITICAL ENTITY INTEGRITY: The knowledge base is strictly about Skill First Applied Labs. Never use facts about Skill First Applied Labs to answer questions about a different company or entity (e.g. Google, Microsoft, Apple, Amazon, Meta, Netflix).
+- If the question asks about an entity not present in verified records (e.g. Google), or if 'search_knowledge_base' returns 'not_found', you MUST provide an honest fallback stating that the information cannot be verified from the available knowledge base (e.g., "I couldn't verify Google's headquarters from the available knowledge base.").
+- Never substitute, infer, or fabricate an answer for an unknown entity using another organization's data.
+- Ground all responses strictly in the verified evidence returned by 'search_knowledge_base'. Attribute sources accurately (e.g. distinguishing official website facts from separately attributed LinkedIn information).
 """
 
 
@@ -592,6 +815,7 @@ class AIAgent:
         self.max_turns = max_turns
         self.verbose = verbose
         self.history: List[Dict[str, Any]] = []
+        self.last_run_tools: List[Dict[str, Any]] = []
 
         # Use injected client (e.g. for testing) or REST client
         if llm_client is not None:
@@ -614,8 +838,13 @@ class AIAgent:
         return self.client
 
     def reset(self) -> None:
-        """Clears conversation history."""
+        """Clears conversation history and tool run records."""
         self.history = []
+        self.last_run_tools = []
+
+    def get_last_tools(self) -> List[Dict[str, Any]]:
+        """Returns the list of tools executed in the most recent run() call."""
+        return list(self.last_run_tools)
 
     def run(self, user_prompt: str) -> str:
         """
@@ -627,6 +856,7 @@ class AIAgent:
            - If tool call: executes Python tool, passes result back to LLM.
         4. Enforces max_turns guardrail to prevent infinite loops.
         """
+        self.last_run_tools = []
         if not user_prompt or not user_prompt.strip():
             return "Please provide a non-empty question or instruction."
 
@@ -670,6 +900,16 @@ class AIAgent:
             # If no tool calls, model returned its final answer
             if not function_calls:
                 final_answer = "\n".join(text_outputs).strip()
+                # Post-processing entity guardrail: if tool execution returned not_found for an external entity,
+                # ensure the response does not falsely assert host company locations or facts.
+                for t in self.last_run_tools:
+                    res = t.get("result", {})
+                    if res.get("status") == "not_found" and res.get("detected_entity"):
+                        ent = res["detected_entity"]
+                        if ent.lower() not in ("skillfirst", "skill first", "skill first applied labs", "company"):
+                            if any(loc in final_answer.lower() for loc in ["chennai", "tiruvallur", "san francisco", "thiruverkadu"]):
+                                final_answer = f"I couldn't verify {ent}'s headquarters from the available knowledge base."
+
                 # Record model's response in history
                 self.history.append({
                     "role": "model",
@@ -693,6 +933,12 @@ class AIAgent:
                     print(f"  [Tool Invocation] {tool_name}({args})")
 
                 tool_result = execute_tool(tool_name, args)
+
+                self.last_run_tools.append({
+                    "name": tool_name,
+                    "args": args,
+                    "result": tool_result
+                })
 
                 if self.verbose:
                     print(f"  [Tool Result] {tool_result}")

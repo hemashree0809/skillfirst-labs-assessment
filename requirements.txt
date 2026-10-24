@@ -1,0 +1,15 @@
+# ==============================================================================
+# SkillFirst Labs — Unified AI/ML Engineering Assessment Dependencies
+# Milestone 1: CSS Insight Parser (Zero-dependency pure Python)
+# Milestone 2: Tool-Using AI Agent & Unified Streamlit Dashboard
+# ==============================================================================
+
+# Official Google GenAI SDK (Milestone 2)
+google-genai>=0.1.1
+
+# Environment Variable Configuration (Milestone 2)
+python-dotenv>=1.0.0
+
+# Interactive Web Application Dashboard (Unified Workbench)
+streamlit>=1.35.0
+

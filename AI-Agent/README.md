@@ -282,39 +282,43 @@ Result: {
 
 ### Test Knowledge-Base Search:
 ```powershell
-python agent.py --search "founders"
+python agent.py --search "founder"
 ```
 **Output:**
 ```json
-Query: founders
+Query: founder
 Result: {
   "status": "success",
-  "query": "founders",
-  "matches_count": 2,
+  "query": "founder",
+  "matches_count": 1,
   "results": [
     {
-      "topic": "company.founders",
-      "fact": "Co-Founder: Dr. Elena Rostova (Chief Executive Officer & Co-Founder). Background: Former AI Research Director with a PhD in Computer Science from Stanford University."
-    },
-    {
-      "topic": "company.founders",
-      "fact": "Co-Founder: Marcus Vance (Chief Technology Officer & Co-Founder). Background: Former Principal Distributed Systems Architect and open-source compiler contributor."
+      "topic": "company.founder",
+      "fact": "Founder of Skill First Applied Labs: Gurunathan Murugan (Founder, Skill First Applied Labs).",
+      "source": "https://www.skillfirstlabs.com/",
+      "source_label": "Official Website",
+      "verification_status": "verified_official_website"
     }
   ]
 }
 ```
 
-### Test Missing Information Retrieval:
+### Test Missing Information Retrieval & Entity Isolation:
 ```powershell
-python agent.py --search "stock price on NASDAQ"
+python agent.py --search "Where is the Google headquarters?"
 ```
 **Output:**
 ```json
-Query: stock price on NASDAQ
+Query: Where is the Google headquarters?
 Result: {
   "status": "not_found",
-  "query": "stock price on NASDAQ",
-  "message": "No verified facts found in the knowledge base matching 'stock price on NASDAQ'. The requested information is not available in verified records."
+  "query": "Where is the Google headquarters?",
+  "matches_count": 0,
+  "results": [],
+  "detected_entity": "Google",
+  "entity_match": false,
+  "message": "No verified facts found in the knowledge base for 'Google'. The requested information is not available in verified records.",
+  "reason": "Query specifically asks about 'Google', which is an external or unverified entity not present in the Skill First Applied Labs knowledge base."
 }
 ```
 
@@ -325,9 +329,10 @@ Result: {
 | Question / Query | Tool Invoked | Expected Agent Behavior |
 | :--- | :--- | :--- |
 | `"What is (45.5 * 12) + (180 / 4)?"` | `calculate(expression="(45.5 * 12) + (180 / 4)")` | Computes `546 + 45 = 591` and returns the exact number. |
-| `"Who are the founders of SkillFirst Labs?"` | `search_knowledge_base(query="founders")` | Retrieves Dr. Elena Rostova and Marcus Vance with their roles. |
-| `"What are the milestones in the internship program?"` | `search_knowledge_base(query="milestones")` | Reports Milestone 1 (CSS Insight Parser), Milestone 2 (Tool-Using AI Agent), and Milestone 3 (RAG Pipeline). |
-| `"What is the monthly stipend multiplied by 3?"` | `search_knowledge_base("stipend")` followed by `calculate("4500 * 3")` | Performs multi-turn reasoning: retrieves \$4,500/month, calculates \$13,500 total. |
+| `"Who is the founder of Skill First Applied Labs?"` | `search_knowledge_base(query="founder")` | Retrieves Gurunathan Murugan (Source: Official Website: `https://www.skillfirstlabs.com/`). |
+| `"What is the mission of Skill First Applied Labs?"` | `search_knowledge_base(query="mission")` | Retrieves verified mission (bridge academia-industry gap via talent management platform). |
+| `"Where is the Google headquarters?"` | `search_knowledge_base(query="Google headquarters")` | Entity mismatch detected. Returns `not_found`. Agent reports Google is not in verified records and never claims host company's location. |
+| `"Where is SkillFirst Labs headquartered?"` | `search_knowledge_base(query="headquarters")` | Retrieves verified Chennai contact address (Official Website) and Tiruvallur headquarters (LinkedIn separately attributed). |
 | `"What is the current stock price of SkillFirst Labs?"` | `search_knowledge_base(query="stock price")` | Tool returns `not_found`. Agent reports that stock price information cannot be verified from available records. |
 | `"Evaluate 100 / (5 - 5)"` | `calculate(expression="100 / (5 - 5)")` | Tool catches division by zero; agent reports that division by zero is undefined. |
 
@@ -335,7 +340,7 @@ Result: {
 
 ## Automated Test Suite
 
-The test suite (`test_agent.py`) contains **32 comprehensive automated unit tests** divided into 5 test classes:
+The test suite (`test_agent.py`) contains **48 comprehensive automated unit and regression tests** divided into 6 test classes:
 
 1. **`TestSafeCalculator` (11 tests)**:
    - `test_basic_arithmetic`: Verifies addition, subtraction, multiplication, and division.
@@ -349,20 +354,48 @@ The test suite (`test_agent.py`) contains **32 comprehensive automated unit test
    - `test_exponent_magnitude_limit`: Protection against CPU exhaustion via huge exponents.
    - `test_deterministic_calculator`: Verifies 50 repeated executions return identical results.
 
-2. **`TestKnowledgeBaseSearch` (7 tests)**:
+2. **`TestKnowledgeBaseSearch` (12 tests)**:
    - `test_knowledge_base_loaded`: Validates JSON schema integrity.
-   - `test_matching_facts_founders`: Verified retrieval of company leadership.
-   - `test_matching_facts_internship_milestones`: Program milestones retrieval.
-   - `test_matching_facts_security_policies`: Grounded compliance and key policy retrieval.
+   - `test_matching_facts_company_identity`: Verifies Skill First Applied Labs official website and status.
+   - `test_matching_facts_founder`: Verifies Gurunathan Murugan as founder; Elena Rostova/Marcus Vance absent.
+   - `test_matching_facts_mission`: Verifies bridging academia-industry gap through talent management platform.
+   - `test_matching_facts_contact_details`: Verifies Chennai address and hello@keystone-tms.in email.
+   - `test_matching_facts_headquarters_linkedin_attribution`: Verifies separate LinkedIn attribution (Tiruvallur, Tamil Nadu) and absence of San Francisco.
+   - `test_google_versus_skillfirst_entity_mismatch`: Queries about Google return `not_found` and never claim host company location.
+   - `test_unknown_company_headquarters_not_inferred`: Queries about Microsoft, Apple, Netflix return `not_found`.
+   - `test_unknown_stock_price_rejected`: Unknown stock price returns `not_found`.
+   - `test_unsupported_policies_rejected`: Unsupported policies return `not_found`.
+   - `test_matching_facts_internship_milestones`: Assessment Milestones 1 and 2 retrieval.
    - `test_matching_facts_case_insensitivity`: Case-invariant search behavior.
-   - `test_missing_facts_reported_clearly`: Explicit `not_found` reporting for unknown topics.
-   - `test_deterministic_knowledge_search`: Verifies 50 repeated identical searches return identical data.
 
 3. **`TestToolExecution` (6 tests)**:
    - `test_execute_calculator_valid` & `test_execute_calculator_error`: Tool dispatcher execution.
    - `test_execute_search_valid` & `test_execute_search_missing`: Search dispatcher execution.
    - `test_execute_unknown_tool`: Rejection of unregistered tool names.
    - `test_execute_tool_invalid_argument_signature`: Parameter validation and error capture.
+
+4. **`TestApiKeyHandling` (2 tests)**:
+   - `test_missing_api_key_raises_error`: Validates error when API key is missing for live calls.
+   - `test_local_tools_work_without_api_key`: Validates 100% offline functionality of local tools.
+
+5. **`TestAgentExecutionLoopMocked` (6 tests)**:
+   - `test_direct_text_response_no_tools`: Single-turn direct answer.
+   - `test_single_tool_call_calculation_flow`: Mocked model arithmetic calling loop.
+   - `test_single_tool_call_knowledge_search_flow`: Mocked model founder lookup loop.
+   - `test_multi_turn_chained_tool_calls`: Chained knowledge retrieval + calculation reasoning.
+   - `test_infinite_loop_prevention_guardrail`: Halts upon reaching max turns safety limit.
+   - `test_reset_conversation`: Verifies clean history reset.
+
+6. **`TestGeminiAgentRegressionSuite` (9 tests)**:
+   - `test_regression_1_arithmetic_question_calculator_selected_and_result`: Verifies calculator dispatch.
+   - `test_regression_2_assessment_question_knowledge_search_selected_and_evidence`: Verifies milestone retrieval.
+   - `test_regression_3_paraphrased_assessment_question_retrieval`: Paraphrased requirements questions.
+   - `test_regression_4_unknown_company_policy_question_no_hallucination`: Unverified policy refusal.
+   - `test_regression_5_tool_returns_no_results_with_explicit_reason`: Explicit `not_found` reason.
+   - `test_regression_6_multi_turn_tool_request_result_final_answer`: Multi-turn tool chaining.
+   - `test_regression_7_tool_and_api_error_handling_no_leaks`: Tool and API error resilience without secret leaks.
+   - `test_regression_8_google_headquarters_honest_fallback`: Honest fallback for Google query without false attribution.
+   - `test_regression_9_skillfirst_headquarters_verified_attribution`: Verified attribution distinguishing website contact from LinkedIn headquarters.
 
 4. **`TestApiKeyHandling` (2 tests)**:
    - `test_missing_api_key_raises_error`: Validates error message when `GEMINI_API_KEY` is missing.
