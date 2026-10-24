@@ -148,8 +148,23 @@ if "chat_messages" not in st.session_state:
 if "pending_agent_prompt" not in st.session_state:
     st.session_state.pending_agent_prompt = None
 
+if "css_editor_box" not in st.session_state:
+    st.session_state.css_editor_box = ""
+
 if "css_input_text" not in st.session_state:
     st.session_state.css_input_text = ""
+
+if "loaded_css_filename" not in st.session_state:
+    st.session_state.loaded_css_filename = None
+
+if "show_css_uploader" not in st.session_state:
+    st.session_state.show_css_uploader = False
+
+if "css_upload_error" not in st.session_state:
+    st.session_state.css_upload_error = None
+
+if "last_loaded_css_sig" not in st.session_state:
+    st.session_state.last_loaded_css_sig = None
 
 if "last_css_report" not in st.session_state:
     st.session_state.last_css_report = None
@@ -246,6 +261,47 @@ def is_missing_knowledge(response_text: str) -> bool:
     return any(m in lower for m in markers)
 
 
+def process_uploaded_css(uploaded: Any, session_dict: Optional[Dict[str, Any]] = None) -> None:
+    """Safely validates and reads an uploaded CSS file, populating session state."""
+    target_state = session_dict if session_dict is not None else st.session_state
+    if uploaded is None:
+        return
+
+    file_name = getattr(uploaded, "name", "uploaded.css")
+    if not file_name.lower().endswith(".css"):
+        target_state["css_upload_error"] = f"Invalid file type for '{file_name}'. Only .css files are supported."
+        target_state["loaded_css_filename"] = None
+        return
+
+    try:
+        raw_bytes = uploaded.getvalue() if hasattr(uploaded, "getvalue") else uploaded.read()
+    except Exception as exc:
+        target_state["css_upload_error"] = f"Failed to read '{file_name}': {str(exc)}"
+        target_state["loaded_css_filename"] = None
+        return
+
+    if not raw_bytes or not raw_bytes.strip():
+        target_state["css_upload_error"] = f"The selected file '{file_name}' is empty (0 bytes). Please select a file with CSS rules."
+        target_state["loaded_css_filename"] = None
+        return
+
+    try:
+        content = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            content = raw_bytes.decode("latin-1")
+        except Exception as exc:
+            target_state["css_upload_error"] = f"Character encoding error in '{file_name}': {str(exc)}"
+            target_state["loaded_css_filename"] = None
+            return
+
+    target_state["css_editor_box"] = content
+    target_state["css_input_text"] = content
+    target_state["loaded_css_filename"] = file_name
+    target_state["css_upload_error"] = None
+    target_state["last_css_report"] = None
+
+
 # ============================================================================
 # Sidebar Navigation & System Diagnostics
 # ============================================================================
@@ -321,26 +377,83 @@ if current_page == "🎨 CSS Insight Parser":
         "and extracts selectors and declarations into structured JSON."
     )
 
-    col_btn1, col_btn2, col_info = st.columns([1.2, 1.2, 3])
+    # Callbacks for robust, error-free Streamlit lifecycle state management
+    def toggle_css_uploader() -> None:
+        st.session_state.show_css_uploader = not st.session_state.get("show_css_uploader", False)
+
+    def on_css_file_uploaded() -> None:
+        process_uploaded_css(st.session_state.get("css_file_uploader"))
+
+    def load_sample_css() -> None:
+        sample_path = CSS_PARSER_DIR / "sample.css"
+        if sample_path.exists():
+            try:
+                content = sample_path.read_text(encoding="utf-8")
+                st.session_state.css_editor_box = content
+                st.session_state.css_input_text = content
+                st.session_state.loaded_css_filename = "sample.css"
+                st.session_state.css_upload_error = None
+                st.session_state.last_css_report = None
+            except Exception as exc:
+                st.session_state.css_upload_error = f"Error reading sample.css: {str(exc)}"
+        else:
+            st.session_state.css_upload_error = "sample.css not found in CSS-Insight-Parser directory."
+
+    def clear_css_input() -> None:
+        st.session_state.css_editor_box = ""
+        st.session_state.css_input_text = ""
+        st.session_state.loaded_css_filename = None
+        st.session_state.css_upload_error = None
+        st.session_state.last_css_report = None
+
+    # Toolbar action buttons
+    col_btn1, col_btn2, col_btn3, col_info = st.columns([1.2, 1.3, 1.0, 2.5])
     with col_btn1:
-        if st.button("📂 Load sample.css", use_container_width=True):
-            sample_path = CSS_PARSER_DIR / "sample.css"
-            if sample_path.exists():
-                st.session_state.css_input_text = sample_path.read_text(encoding="utf-8")
-                st.toast("Loaded Normalize.css benchmark stylesheet!", icon="📂")
-            else:
-                st.error("sample.css not found in CSS-Insight-Parser directory.")
+        st.button("📂 Load CSS", key="btn_load_css", use_container_width=True, on_click=toggle_css_uploader)
 
     with col_btn2:
-        if st.button("🧹 Clear Input", use_container_width=True):
-            st.session_state.css_input_text = ""
-            st.session_state.last_css_report = None
-            st.rerun()
+        st.button("📄 Load sample.css", key="btn_load_sample_css", use_container_width=True, on_click=load_sample_css)
 
-    # CSS Code Input
+    with col_btn3:
+        st.button("🧹 Clear Input", key="btn_clear_css", use_container_width=True, on_click=clear_css_input)
+
+    with col_info:
+        if st.session_state.get("loaded_css_filename"):
+            st.markdown(
+                f"<div style='margin-top: 6px;'><span class='metric-badge badge-local'>"
+                f"📄 Loaded: <b>{st.session_state.loaded_css_filename}</b>"
+                f"</span></div>",
+                unsafe_allow_html=True
+            )
+
+    # File selection interface revealed when Load CSS is clicked
+    if st.session_state.get("show_css_uploader", False):
+        with st.container(border=True):
+            head_col1, head_col2 = st.columns([5, 1])
+            with head_col1:
+                st.markdown("**📁 Select CSS File from Computer**")
+                st.caption("Choose any `.css` file from your computer to populate the editor below.")
+            with head_col2:
+                def close_uploader():
+                    st.session_state.show_css_uploader = False
+                st.button("✖ Close", key="btn_close_uploader", use_container_width=True, on_click=close_uploader)
+
+            st.file_uploader(
+                "Choose a CSS file (.css):",
+                type=["css"],
+                key="css_file_uploader",
+                on_change=on_css_file_uploaded,
+                help="Select a .css file from your device",
+                label_visibility="collapsed"
+            )
+
+    # Display error message if upload/load had issues
+    if st.session_state.get("css_upload_error"):
+        st.error(st.session_state.css_upload_error, icon="⚠️")
+
+    # CSS Code Input Editor (Editable by the user)
     css_content = st.text_area(
         "CSS Code:",
-        value=st.session_state.css_input_text,
         height=240,
         placeholder="/* Enter your CSS rules here */\nbody {\n  margin: 0;\n  padding: 10px;\n  background-color: #fafafa;\n}",
         key="css_editor_box"
@@ -356,7 +469,8 @@ if current_page == "🎨 CSS Insight Parser":
         else:
             try:
                 t0 = time.perf_counter()
-                report = analyze_css(css_content, file_name="workbench_input.css")
+                file_label = st.session_state.get("loaded_css_filename") or "workbench_input.css"
+                report = analyze_css(css_content, file_name=file_label)
                 t_elapsed = (time.perf_counter() - t0) * 1000  # ms
                 report["_parse_time_ms"] = t_elapsed
                 st.session_state.last_css_report = report
@@ -415,10 +529,15 @@ if current_page == "🎨 CSS Insight Parser":
 
         with tab_json:
             json_str = json.dumps(rep, indent=2)
+            dl_filename = (
+                f"parsed_{Path(st.session_state.loaded_css_filename).stem}_output.json"
+                if st.session_state.get("loaded_css_filename")
+                else "parsed_css_output.json"
+            )
             st.download_button(
                 "📥 Download Parsed JSON Output",
                 data=json_str,
-                file_name="parsed_css_output.json",
+                file_name=dl_filename,
                 mime="application/json",
             )
             st.json(rep)
@@ -581,15 +700,24 @@ elif current_page == "⚖️ Gemini vs. No Gemini":
             "100 / 0",
             "12.5 * 4.2 - 2.5",
         ]
-        chosen_preset = None
+        if "cmp_calc_input" not in st.session_state:
+            st.session_state.cmp_calc_input = "(45.5 * 12) + (180 / 4)"
+
+        def set_cmp_calc_query(expr_text: str) -> None:
+            st.session_state.cmp_calc_input = expr_text
+
         for i, cp in enumerate(calc_presets):
             with ex_cols[i]:
-                if st.button(cp, key=f"calc_pre_{i}", use_container_width=True):
-                    chosen_preset = cp
+                st.button(
+                    cp,
+                    key=f"calc_pre_{i}",
+                    use_container_width=True,
+                    on_click=set_cmp_calc_query,
+                    args=(cp,)
+                )
 
         calc_input = st.text_input(
             "Mathematical Expression:",
-            value=chosen_preset or "(45.5 * 12) + (180 / 4)",
             key="cmp_calc_input"
         )
         task_input_value = calc_input
@@ -603,15 +731,24 @@ elif current_page == "⚖️ Gemini vs. No Gemini":
             "Where is the Google headquarters?",
             "Where is SkillFirst Labs headquartered?",
         ]
-        chosen_kb_preset = None
+        if "cmp_kb_input" not in st.session_state:
+            st.session_state.cmp_kb_input = "Who is the founder of Skill First Applied Labs?"
+
+        def set_cmp_kb_query(query_text: str) -> None:
+            st.session_state.cmp_kb_input = query_text
+
         for i, kp in enumerate(kb_presets):
             with kb_cols[i]:
-                if st.button(kp, key=f"kb_pre_{i}", use_container_width=True):
-                    chosen_kb_preset = kp
+                st.button(
+                    kp,
+                    key=f"kb_pre_{i}",
+                    use_container_width=True,
+                    on_click=set_cmp_kb_query,
+                    args=(kp,)
+                )
 
         kb_input = st.text_input(
             "Knowledge Query / Question:",
-            value=chosen_kb_preset or "Who is the founder of Skill First Applied Labs?",
             key="cmp_kb_input"
         )
         task_input_value = kb_input
@@ -624,15 +761,24 @@ elif current_page == "⚖️ Gemini vs. No Gemini":
             "Nested At-Rules": "@media (max-width: 600px) {\n  .container { width: 100%; padding: 5px; }\n}\n@font-face {\n  font-family: 'Open Sans';\n  src: url('font.woff2');\n}",
             "Load Normalize.css": (CSS_PARSER_DIR / "sample.css").read_text(encoding="utf-8") if (CSS_PARSER_DIR / "sample.css").exists() else "body { margin: 0; }"
         }
-        chosen_css = None
+        if "cmp_css_input" not in st.session_state:
+            st.session_state.cmp_css_input = sample_css_presets["Simple Rules"]
+
+        def set_cmp_css_query(css_text: str) -> None:
+            st.session_state.cmp_css_input = css_text
+
         for i, (label, val) in enumerate(sample_css_presets.items()):
             with css_cols[i]:
-                if st.button(label, key=f"css_pre_{i}", use_container_width=True):
-                    chosen_css = val
+                st.button(
+                    label,
+                    key=f"css_pre_{i}",
+                    use_container_width=True,
+                    on_click=set_cmp_css_query,
+                    args=(val,)
+                )
 
         css_input = st.text_area(
             "CSS Stylesheet to Parse:",
-            value=chosen_css or sample_css_presets["Simple Rules"],
             height=160,
             key="cmp_css_input"
         )

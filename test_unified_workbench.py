@@ -112,6 +112,88 @@ class TestUnifiedWorkbenchIntegration(unittest.TestCase):
         import app
         self.assertIsNotNone(app)
 
+    def test_process_uploaded_css_valid(self):
+        import app
+
+        class DummyUpload:
+            def __init__(self, name: str, data: bytes):
+                self.name = name
+                self.data = data
+
+            def getvalue(self) -> bytes:
+                return self.data
+
+        state = {}
+        valid_css = b"body { margin: 0; padding: 20px; color: #111; }\n.btn { border-radius: 4px; }"
+        dummy = DummyUpload("styles.css", valid_css)
+        app.process_uploaded_css(dummy, state)
+
+        self.assertIsNone(state.get("css_upload_error"))
+        self.assertEqual(state.get("loaded_css_filename"), "styles.css")
+        self.assertEqual(state.get("css_editor_box"), valid_css.decode("utf-8"))
+        self.assertEqual(state.get("css_input_text"), valid_css.decode("utf-8"))
+
+    def test_process_uploaded_css_invalid_extension(self):
+        import app
+
+        class DummyUpload:
+            def __init__(self, name: str, data: bytes):
+                self.name = name
+                self.data = data
+
+            def getvalue(self) -> bytes:
+                return self.data
+
+        state = {}
+        dummy = DummyUpload("notes.txt", b"some text here")
+        app.process_uploaded_css(dummy, state)
+
+        self.assertIsNotNone(state.get("css_upload_error"))
+        self.assertIn("Invalid file type", state["css_upload_error"])
+        self.assertIsNone(state.get("loaded_css_filename"))
+        self.assertNotIn("css_editor_box", state)
+
+    def test_process_uploaded_css_empty_file(self):
+        import app
+
+        class DummyUpload:
+            def __init__(self, name: str, data: bytes):
+                self.name = name
+                self.data = data
+
+            def getvalue(self) -> bytes:
+                return self.data
+
+        state = {}
+        dummy = DummyUpload("empty.css", b"   \r\n\t  ")
+        app.process_uploaded_css(dummy, state)
+
+        self.assertIsNotNone(state.get("css_upload_error"))
+        self.assertIn("empty", state["css_upload_error"])
+        self.assertIsNone(state.get("loaded_css_filename"))
+        self.assertNotIn("css_editor_box", state)
+
+    def test_process_uploaded_css_encoding_fallback(self):
+        import app
+
+        class DummyUpload:
+            def __init__(self, name: str, data: bytes):
+                self.name = name
+                self.data = data
+
+            def getvalue(self) -> bytes:
+                return self.data
+
+        state = {}
+        # Latin-1 bytes with non-utf8 byte sequence
+        latin1_bytes = b"/* Copyright \xa9 2026 */\nbody { color: black; }"
+        dummy = DummyUpload("latin.css", latin1_bytes)
+        app.process_uploaded_css(dummy, state)
+
+        self.assertIsNone(state.get("css_upload_error"))
+        self.assertEqual(state.get("loaded_css_filename"), "latin.css")
+        self.assertIn("Copyright", state.get("css_editor_box", ""))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
